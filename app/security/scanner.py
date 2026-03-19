@@ -5,29 +5,52 @@ import numpy as np
 class SecureScanner:
     def __init__(self):
         print("🛡️ Booting Aegis Secure Scanner...")
+
+        # --- 1. ROBUST PATH RESOLUTION ---
+        current_file_path = os.path.abspath(__file__)
         
-        # Point to backend/models folder
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        # Step up the directory tree to find the root backend folder
+        security_dir = os.path.dirname(current_file_path)
+        app_dir = os.path.dirname(security_dir)
+        base_dir = os.path.dirname(app_dir) 
+        
         model_dir = os.path.join(base_dir, "models")
         
-        with open(os.path.join(model_dir, "vectorizer.pkl"), "rb") as f:
-            self.vectorizer = pickle.load(f)
-        with open(os.path.join(model_dir, "classifier.pkl"), "rb") as f:
-            self.classifier = pickle.load(f)
+        # --- 2. LOAD MODELS WITH ERROR HANDLING ---
+        try:
+            with open(os.path.join(model_dir, "vectorizer.pkl"), "rb") as f:
+                self.vectorizer = pickle.load(f)
+            with open(os.path.join(model_dir, "classifier.pkl"), "rb") as f:
+                self.classifier = pickle.load(f)
+            print(f"✅ Models loaded successfully from: {model_dir}")
+        except FileNotFoundError:
+            print(f"❌ ERROR: Could not find models.")
+            print(f"🔍 The scanner was looking here: {model_dir}")
+            print("Make sure your 'models' folder is placed in that exact location.")
         
         # Extract features for Explainability (XAI)
         self.feature_names = np.array(self.vectorizer.get_feature_names_out())
         self.coefficients = self.classifier.coef_[0]
 
     def scan(self, text: str):
+        text_lower = text.lower()
+        
+        # --- LAYER 1: SIGNATURE CHECK (Hard Filter) ---
+        # Instantly blocks known high-risk attacks
+        known_signatures = ["do anything now", "dan", "jailbreak", "dev mode", "chaosgpt"]
+        for sig in known_signatures:
+            if sig in text_lower:
+                return False, 1.0, [sig, "signature_match"]
+
+        # --- LAYER 2: ML MODEL (Soft Filter) ---
         # 1. Transform text
         vector = self.vectorizer.transform([text])
         
         # 2. Get Risk Score
         risk_score = self.classifier.predict_proba(vector)[0][1]
         
-        # 3. Decision (Block if score > 0.65)
-        is_safe = risk_score < 0.65
+        # 3. Decision (Using the 0.30 threshold from our 87% recall test)
+        is_safe = risk_score < 0.30
         
         # 4. Explainability: Find the specific "Trigger Words"
         triggers = []
@@ -36,7 +59,7 @@ class SecureScanner:
             if len(nonzero_indices) > 0:
                 word_scores = [(self.feature_names[i], self.coefficients[i]) for i in nonzero_indices]
                 word_scores.sort(key=lambda x: x[1], reverse=True)
-                # Keep top 3 dangerous words found in this prompt
+                # Keep top 3 dangerous words found in this prompt (ignore negative safe weights)
                 triggers = [word for word, score in word_scores[:3] if score > 0]
 
         return is_safe, float(risk_score), triggers
