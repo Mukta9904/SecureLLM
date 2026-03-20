@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
-from app.services.models import ChatRequest, ChatResponse, SecurityDetail, LogEntry, ThresholdUpdate
+from app.services.models import ChatRequest, ConfigUpdate, ChatResponse, SecurityDetail, LogEntry
 from app.security.scanner import SecureScanner
 from app.services.gemini import get_gemini_response # Assuming you have this
 from app.services.database import chat_collection, sessions_collection, settings_collection
@@ -19,37 +19,50 @@ app.add_middleware(
 scanner = SecureScanner()
 
 # --- THE ZERO-LATENCY THRESHOLD TRICK ---
-GLOBAL_THRESHOLD = 0.30
+GLOBAL_THRESHOLD = 0.45
+GLOBAL_MODEL = "LR_models" # Your default LR folder
 
 @app.on_event("startup")
 async def startup_event():
-    """Load the threshold from DB into RAM when server starts."""
-    global GLOBAL_THRESHOLD
+    """Load config from DB and load the ML model into RAM."""
+    global GLOBAL_THRESHOLD, GLOBAL_MODEL
     setting = await settings_collection.find_one({"_id": "config"})
-    if setting and "threshold" in setting:
-        GLOBAL_THRESHOLD = setting["threshold"]
+    
+    if setting:
+        GLOBAL_THRESHOLD = setting.get("threshold", 0.45)
+        GLOBAL_MODEL = setting.get("model_folder", "LR_models")
     else:
-        # Create it if it doesn't exist
-        await settings_collection.insert_one({"_id": "config", "threshold": 0.30})
-        GLOBAL_THRESHOLD = 0.30
-    print(f"⚙️ Active Security Threshold set to: {GLOBAL_THRESHOLD}")
+        await settings_collection.insert_one({"_id": "config", "threshold": 0.45, "model_folder": "new_models"})
+    
+    print(f"⚙️ Boot Configuration -> Threshold: {GLOBAL_THRESHOLD} | Model: {GLOBAL_MODEL}")
+    scanner.load_model_from_folder(GLOBAL_MODEL)
 
-# --- 1. SETTINGS ENDPOINTS ---
-@app.get("/admin/settings/threshold")
-async def get_threshold():
-    return {"threshold": GLOBAL_THRESHOLD}
 
-@app.post("/admin/settings/threshold")
-async def update_threshold(update: ThresholdUpdate):
-    """Admin updates the threshold. Updates RAM and DB instantly."""
-    global GLOBAL_THRESHOLD
+# --- SETTINGS ENDPOINTS ---
+@app.get("/admin/settings/config")
+async def get_config():
+    return {"threshold": GLOBAL_THRESHOLD, "model_folder": GLOBAL_MODEL}
+
+@app.post("/admin/settings/config")
+async def update_config(update: ConfigUpdate):
+    """Admin updates the threshold or model. Hot-reloads instantly."""
+    global GLOBAL_THRESHOLD, GLOBAL_MODEL
+    
     GLOBAL_THRESHOLD = update.threshold
+    
+    # Only hot-reload the `.pkl` files if the user actually changed the model dropdown!
+    if GLOBAL_MODEL != update.model_folder:
+        GLOBAL_MODEL = update.model_folder
+        success = scanner.load_model_from_folder(GLOBAL_MODEL)
+        if not success:
+            return {"error": f"Failed to load models from {GLOBAL_MODEL}"}
+
     await settings_collection.update_one(
         {"_id": "config"}, 
-        {"$set": {"threshold": GLOBAL_THRESHOLD}}, 
+        {"$set": {"threshold": GLOBAL_THRESHOLD, "model_folder": GLOBAL_MODEL}}, 
         upsert=True
     )
-    return {"message": "Threshold updated successfully", "new_threshold": GLOBAL_THRESHOLD}
+    return {"message": "Configuration applied instantly.", "config": update.dict()}
 
 # --- 2. CHAT ENDPOINTS ---
 @app.post("/chat", response_model=ChatResponse)
@@ -60,7 +73,7 @@ async def chat_endpoint(request: ChatRequest):
     is_safe, risk_score, triggers = scanner.scan(request.message, threshold=GLOBAL_THRESHOLD)
     
     security_detail = SecurityDetail(
-        scanner_name="SecureLLM-Sparse-Ngram",
+        scanner_name=f"SecureLLM-{GLOBAL_MODEL}",
         is_safe=is_safe,
         risk_score=risk_score,
         triggers=triggers

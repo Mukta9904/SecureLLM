@@ -32,5 +32,6 @@ class LogEntry(BaseModel):
     triggers: List[str]
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class ThresholdUpdate(BaseModel):
+class ConfigUpdate(BaseModel):
     threshold: float
+    model_folder: str 
