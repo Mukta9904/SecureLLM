@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 # --- API Models (Frontend <-> Backend) ---
@@ -30,7 +30,7 @@ class LogEntry(BaseModel):
     is_safe: bool
     risk_score: float
     triggers: List[str]
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ThresholdUpdate(BaseModel):
     threshold: float

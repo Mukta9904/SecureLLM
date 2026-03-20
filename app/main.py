@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
+from datetime import datetime, timezone
 from app.services.models import ChatRequest, ChatResponse, SecurityDetail, LogEntry, ThresholdUpdate
 from app.security.scanner import SecureScanner
 from app.services.gemini import get_gemini_response # Assuming you have this
@@ -54,7 +54,7 @@ async def update_threshold(update: ThresholdUpdate):
 # --- 2. CHAT ENDPOINTS ---
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     
     # Pass the ultra-fast global threshold to the scanner
     is_safe, risk_score, triggers = scanner.scan(request.message, threshold=GLOBAL_THRESHOLD)
@@ -89,7 +89,7 @@ async def chat_endpoint(request: ChatRequest):
     bot_message_entry = {
         "role": "bot", 
         "content": bot_reply, 
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "is_blocked": not is_safe
     }
     
@@ -121,8 +121,14 @@ async def get_session_history(session_id: str):
     session = await sessions_collection.find_one({"session_id": session_id})
     if not session:
         return {"messages": []}
-    return {"messages": session.get("messages", [])}
-
+    messages = session.get("messages", [])
+    
+    # --- TIMEZONE FIX ---
+    for msg in messages:
+        if "timestamp" in msg and msg["timestamp"].tzinfo is None:
+            msg["timestamp"] = msg["timestamp"].replace(tzinfo=timezone.utc)
+            
+    return {"messages": messages}
 # --- 3. ADMIN DASHBOARD ENDPOINTS ---
 @app.get("/admin/stats")
 async def get_dashboard_stats():
@@ -150,6 +156,8 @@ async def get_dashboard_stats():
     recent_logs = await chat_collection.find().sort("timestamp", -1).limit(10).to_list(10)
     for log in recent_logs:
         log["_id"] = str(log["_id"])
+        if "timestamp" in log and log["timestamp"].tzinfo is None:
+            log["timestamp"] = log["timestamp"].replace(tzinfo=timezone.utc)
 
     return {
         "total_requests": total_requests,
