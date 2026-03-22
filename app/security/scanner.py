@@ -3,9 +3,20 @@ import os
 import time
 import requests
 import numpy as np
+from dotenv import load_dotenv
 
-# PASTE YOUR NGROK URL HERE (Update this whenever Colab restarts)
+# 1. Force python to find the exact path to the .env file locally
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(os.path.dirname(current_dir)) 
+env_path = os.path.join(root_dir, '.env')
+load_dotenv(dotenv_path=env_path)
+
+# 2. Grab the URL from the system. 
 COLAB_API_URL = os.getenv("COLAB_API_URL")
+
+# 3. IF it is still None (because we forgot to set it), force a safe default so it doesn't crash!
+if not COLAB_API_URL:
+    COLAB_API_URL = "http://localhost:8000/scan_layer2"
 
 class SecureScanner:
     def __init__(self):
