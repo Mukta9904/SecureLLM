@@ -11,6 +11,28 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(current_dir)) 
 env_path = os.path.join(root_dir, '.env')
 load_dotenv(dotenv_path=env_path)
+import re
+
+def sanitize_prompt(text: str) -> str:
+    """
+    LAYER 0: Pre-processing & Text Sanitization
+    Defeats Token Smuggling and Invisible Character obfuscation.
+    """
+    # 1. Strip invisible zero-width characters
+    # Hackers use these to split tokens without the human eye noticing
+    clean_text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
+    
+    # 2. Defeat single-letter token smuggling (e.g., s-y-s-t-e-m, p r o m p t, h.a.c.k)
+    # This regex hunts for sequences of 4 or more isolated letters separated by punctuation/spaces.
+    def squash_word(match):
+        # Remove all non-alphanumeric characters from the matched smuggled word
+        return re.sub(r'[^a-zA-Z0-9]', '', match.group(0))
+        
+    # The regex: exactly one letter, followed by exactly one separator, repeated 3+ times, ending in a letter.
+    # It ignores normal words, but catches "s-y-s-t-e-m".
+    clean_text = re.sub(r'(?:[a-zA-Z][-_.\s]){3,}[a-zA-Z]', squash_word, clean_text)
+    
+    return clean_text
 
 # 3. IF it is still None (because we forgot to set it), force a safe default so it doesn't crash!
 class SecureScanner:
@@ -55,20 +77,25 @@ class SecureScanner:
 
     def scan(self, text: str, threshold: float = 0.45):
         start_time = time.perf_counter() 
+        # --- SANITIZATION ---
+        # Clean the text to defeat token smuggling before any ML happens
+        original_text = text # Keep the original just in case we need to log it
+        text = sanitize_prompt(text)
         
+        # If the vectorizer or classifier are not loaded, return a safe default
         if self.classifier is None:
             return True, 0.0, [], "None", 0.0
 
         text_lower = text.lower()
         
-        # --- LAYER 0: SIGNATURE CHECK ---
+        # --- SIGNATURE CHECK ---
         known_signatures = ["do anything now", "dan", "jailbreak", "dev mode", "chaosgpt"]
         for sig in known_signatures:
             if sig in text_lower:
                 latency = round((time.perf_counter() - start_time) * 1000, 2)
                 return False, 1.0, [sig, "signature_match"], "Layer 0 (Signature)", latency
 
-        # --- LAYER 1: FAST ML ---
+        # --- FAST ML ---
         vector = self.vectorizer.transform([text])
         risk_score = float(self.classifier.predict_proba(vector)[0][1])
         
