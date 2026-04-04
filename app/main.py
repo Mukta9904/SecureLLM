@@ -66,8 +66,27 @@ async def update_config(update: ConfigUpdate):
 async def chat_endpoint(request: ChatRequest):
     start_time = datetime.now(timezone.utc)
     
+    # 1. RUN THE FIREWALL
     is_safe, risk_score, triggers, layer_used, latency_ms = scanner.scan(request.message, threshold=GLOBAL_THRESHOLD)
     
+    # --- 2. THE BENCHMARK INTERCEPT ---
+    if request.is_benchmark:
+        status = "success" if is_safe else "blocked"
+        return {
+            "status": status,
+            "bot_reply": "[BENCHMARK MODE: LLM & DB Skipped]",
+            "security_log": {
+                "scanner_name": layer_used,
+                "is_safe": is_safe,
+                "risk_score": risk_score,
+                "triggers": triggers,
+                "latency_ms": latency_ms
+            },
+            "timestamp": start_time,
+            "session_id": request.session_id
+        }
+
+    # 3. NORMAL PRODUCTION FLOW (Only runs if is_benchmark is False)
     security_detail = SecurityDetail(
         scanner_name=layer_used, 
         is_safe=is_safe,
@@ -133,7 +152,6 @@ async def chat_endpoint(request: ChatRequest):
         "timestamp": start_time,
         "session_id": request.session_id
     }
-
 # ⚠️ FIXED HIERARCHY: Static Route placed BEFORE the Dynamic Route! 
 @app.get("/chat/sessions")
 async def list_all_sessions():

@@ -5,13 +5,13 @@ import requests
 import numpy as np
 from dotenv import load_dotenv
 from gradio_client import Client
+import re
 
 # 1. Force python to find the exact path to the .env file locally
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(current_dir)) 
 env_path = os.path.join(root_dir, '.env')
 load_dotenv(dotenv_path=env_path)
-import re
 
 def sanitize_prompt(text: str) -> str:
     """
@@ -34,7 +34,6 @@ def sanitize_prompt(text: str) -> str:
     
     return clean_text
 
-# 3. IF it is still None (because we forgot to set it), force a safe default so it doesn't crash!
 class SecureScanner:
     def __init__(self):
         print("🛡️ Booting Aegis Secure Scanner (Microservice Mode)...")
@@ -44,6 +43,9 @@ class SecureScanner:
         self.feature_names = None
         self.importances = None
         self.active_folder = None
+        
+        # --- THE LATENCY FIX: Placeholder for the global Hugging Face connection ---
+        self.dl_client = None 
         
         current_file_path = os.path.abspath(__file__)
         security_dir = os.path.dirname(current_file_path)
@@ -71,15 +73,22 @@ class SecureScanner:
             return False
 
         if folder_name == "cascade":
-            print("✅ Cascade Mode active. Layer 2 requests will be routed to Hugging Face.")
-            
+            print("✅ Cascade Mode active. Connecting to Hugging Face Layer 2 API...")
+            # --- THE LATENCY FIX: Initialize the connection exactly ONCE during server boot! ---
+            try:
+                self.dl_client = Client("Mukta9904/aegis-dl-api")
+                print("✅ Successfully connected to Cloud DL Layer.")
+            except Exception as e:
+                print(f"⚠️ Failed to connect to HF space: {e}")
+                
         return True
 
     def scan(self, text: str, threshold: float = 0.45):
         start_time = time.perf_counter() 
+        
         # --- SANITIZATION ---
         # Clean the text to defeat token smuggling before any ML happens
-        original_text = text # Keep the original just in case we need to log it
+        original_text = text 
         text = sanitize_prompt(text)
         
         # If the vectorizer or classifier are not loaded, return a safe default
@@ -88,14 +97,27 @@ class SecureScanner:
 
         text_lower = text.lower()
         
-        # --- SIGNATURE CHECK ---
-        known_signatures = ["do anything now", "dan", "jailbreak", "dev mode", "chaosgpt"]
-        for sig in known_signatures:
-            if sig in text_lower:
-                latency = round((time.perf_counter() - start_time) * 1000, 2)
-                return False, 1.0, [sig, "signature_match"], "Layer 0 (Signature)", latency
+        # --- LAYER 0a: HARD SIGNATURE BLOCK ---
+        # These are undisputed malicious commands. Block immediately to save compute.
+        #hard_signatures = []
+        #for sig in hard_signatures:
+            #if sig in text_lower:
+                #latency = round((time.perf_counter() - start_time) * 1000, 2)
+                #return False, 1.0, [sig, "hard_signature_match"], "Layer 0 (Signature)", latency
 
-        # --- FAST ML ---
+        # --- LAYER 0b: THE ROLEPLAY TRIPWIRE (FIX 2 - Conditional Escalation) ---
+        
+        # These indicate complex framing. We don't block them, we FORCE a Deep Learning scan.
+        roleplay_tripwires = [
+            "you are a", "act as a", "ignore all previous", 
+            "forget your previous", "assume the persona", 
+            "you are now", "system override", "do anything now", "dan", "jailbreak", "chaosgpt"
+        ]
+        
+        active_tripwire = next((t for t in roleplay_tripwires if t in text_lower), None)
+        force_deep_scan = active_tripwire is not None
+
+        # --- FAST ML (LAYER 1) ---
         vector = self.vectorizer.transform([text])
         risk_score = float(self.classifier.predict_proba(vector)[0][1])
         
@@ -105,28 +127,41 @@ class SecureScanner:
             word_scores = [(self.feature_names[i], self.importances[i]) for i in nonzero_indices]
             word_scores.sort(key=lambda x: x[1], reverse=True)
             triggers = [word for word, score in word_scores[:3] if score > 0.0]
+            
+        # Add the tripwire phrase to the triggers so it shows up in your admin dashboard
+        if force_deep_scan and active_tripwire not in triggers:
+            triggers.append(active_tripwire)
 
         # --- CASCADE ROUTING (CALLING HUGGING FACE DL LAYER) ---
         if self.active_folder == "cascade":
-            if 0.15 <= risk_score <= 0.85:
-                print(f"🟡 Grey Area Score ({risk_score:.2f}). Routing to Layer 2 DL...")
+            
+            # --- DYNAMIC LENGTH THRESHOLDING (FIX 3) ---
+            # If the prompt is over 500 characters, widen the net to catch buried attacks
+            prompt_length = len(original_text)
+            cascade_lower_bound = 0.05 if prompt_length > 500 else 0.15
+            
+            # ROUTE TO DL IF: Tripwire triggered OR Score is in the Grey Area
+            if force_deep_scan or (cascade_lower_bound <= risk_score <= 0.85):
+                
+                # Log exactly why it was escalated to the cloud
+                reason = f"Tripwire ['{active_tripwire}']" if force_deep_scan else f"Grey Area ({risk_score:.2f} | Len: {prompt_length})"
+                print(f"🟡 {reason}. Routing to Layer 2 DL...")
                 
                 try:
-                    # Connect to your free Space
-                    dl_client = Client("Mukta9904/aegis-dl-api")
-                    
-                    # The API returns the tuple: (score, triggers_dict)
-                    dl_risk_score, dl_triggers = dl_client.predict(
-                        text=text,
+                    if self.dl_client is None:
+                        raise Exception("Hugging Face Client was not initialized properly at startup.")
+                        
+                    dl_risk_score, dl_triggers = self.dl_client.predict(
+                        text=original_text, # Passing the original text so DistilBERT sees full context
                         api_name="/analyze_prompt"
                     )
                     
-                    # --- THE FIX IS HERE ---
-                    # Instead of formatting it with weights, just grab the raw words
-                    # This makes it identical to the ML Layer's output!
                     extracted_triggers = list(dl_triggers.keys())
-                    
-                    is_safe = dl_risk_score < 0.50
+                    if force_deep_scan: 
+                        extracted_triggers.append("roleplay_framing")
+                        
+                    # Using the tighter 0.40 threshold to catch subtle roleplays
+                    is_safe = dl_risk_score < 0.35 
                     latency = round((time.perf_counter() - start_time) * 1000, 2)
                     
                     return is_safe, dl_risk_score, extracted_triggers, "Layer 2 (LP + SHAP)", latency
@@ -135,15 +170,15 @@ class SecureScanner:
                     print(f"⚠️ Layer 2 API Failed: {e}. Falling back to Layer 1!")
                     is_safe = risk_score < 0.50
                     latency = round((time.perf_counter() - start_time) * 1000, 2)
-                    return is_safe, risk_score, triggers, "Layer 1 (Fallback Mode)", latency
+                    return is_safe, risk_score, triggers, "Layer 1", latency
             else:
                 is_safe = risk_score < 0.50 
                 latency = round((time.perf_counter() - start_time) * 1000, 2)
-                return is_safe, risk_score, triggers, "Layer 1 (Logistic Regression)", latency
+                return is_safe, risk_score, triggers, "Layer 1", latency
 
         # --- STANDARD ML LOGIC ---
         else:
             is_safe = risk_score < threshold
             latency = round((time.perf_counter() - start_time) * 1000, 2)
             if is_safe: triggers = [] 
-            return is_safe, risk_score, triggers, "Layer 1 (Logistic Regression)", latency
+            return is_safe, risk_score, triggers, "Layer 1", latency

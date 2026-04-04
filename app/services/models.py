@@ -6,8 +6,8 @@ import uuid
 # --- API Models (Frontend <-> Backend) ---
 class ChatRequest(BaseModel):
     message: str
-    # If the frontend doesn't send a session_id, generate a new one automatically
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    is_benchmark: Optional[bool] = False
 
 class SecurityDetail(BaseModel):
     scanner_name: str
